@@ -1,6 +1,6 @@
 # property-scraper
 
-Pulls every parcel in Saratoga County, NY (~103k) from public government data
+Pulls every parcel in Saratoga County, NY (~102k) from public government data
 into two CSVs you can filter for homes worth pursuing.
 
 ```
@@ -28,7 +28,10 @@ A full run makes ~210 requests, one per second, and takes a few minutes.
 | `exemption_codes` | State roll (e.g. 41800/41801 senior, 41834/41854 STAR, 4112x veterans) |
 | `water`, `sewer`, `utilities` | County GIS |
 | `deed_book`, `deed_page` | County GIS: the most recent recorded deed |
-| `current_deed_first_seen`, `transferred_since_2023` | Derived: the roll year the current deed first appeared |
+| `last_deed_year` | Inferred: since 2005 the county numbers deed books by year, so book 2018 means recorded in 2018. Blank with a book below 2000 means the deed predates 2005 |
+| `current_deed_first_seen` | Derived: the roll year the current deed first appeared |
+| `redeeded_since_2023` | A new deed was recorded since the 2023 roll (a sale, or a transfer into a trust or estate) |
+| `owner_changed_since_2023` | Re-deeded and the owner name changed: most likely a sale |
 | `grid_east`, `grid_north` | NY State Plane East (feet) |
 
 `data/saratoga_deed_history.csv`: one row per distinct deed seen on each

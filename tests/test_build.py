@@ -1,6 +1,6 @@
 import pandas as pd
 
-from saratoga.build import build, likely_owner_occupied, summarize_state_roll
+from saratoga.build import build, deed_year, likely_owner_occupied, summarize_state_roll
 from saratoga.county_gis import deed_history
 
 
@@ -25,9 +25,9 @@ def test_deed_history_keeps_first_year_each_deed_appears():
 def test_build_flags_transfers_and_joins_state_roll():
     gis = pd.DataFrame([
         {"SWIS": "412001", "PRINT_KEY": "1", "MUNI": "Ballston Spa", "PROP_ADDR": "163 WEST HIGH ST",
-         "MAIL_1ADDR": "163  West High Street", "DEED_BOOK": "2010", "DEED_PAGE": "5"},
+         "MAIL_1ADDR": "163  West High Street", "OWNER": "SMITH", "DEED_BOOK": "2010", "DEED_PAGE": "5"},
         {"SWIS": "412001", "PRINT_KEY": "2", "MUNI": "Ballston Spa", "PROP_ADDR": "10 MAIN ST",
-         "MAIL_1ADDR": "PO Box 4", "DEED_BOOK": "2024", "DEED_PAGE": "77"},
+         "MAIL_1ADDR": "PO Box 4", "OWNER": "DOE", "DEED_BOOK": "2024", "DEED_PAGE": "77"},
     ])
     history = deed_history({
         2023: _layer([("1", "2010", "5", "SMITH"), ("2", "2001", "9", "JONES")]),
@@ -42,8 +42,11 @@ def test_build_flags_transfers_and_joins_state_roll():
 
     parcels = build(gis, history, state).set_index("print_key")
 
-    assert parcels.loc["1", "transferred_since_2023"] == False  # noqa: E712
-    assert parcels.loc["2", "transferred_since_2023"] == True  # noqa: E712
+    assert parcels.loc["1", "redeeded_since_2023"] == False  # noqa: E712
+    assert parcels.loc["2", "redeeded_since_2023"] == True  # noqa: E712
+    assert parcels.loc["2", "owner_changed_since_2023"] == True  # noqa: E712
+    assert parcels.loc["2", "last_deed_year"] == 2024
+    assert parcels.loc["1", "last_deed_year"] == 2010
     assert parcels.loc["1", "all_owners"] == "Dorothy Smith; Al Smith"
     assert parcels.loc["1", "full_market_value"] == 250000
     assert parcels.loc["1", "exemption_codes"] == "41854"
@@ -56,3 +59,23 @@ def test_likely_owner_occupied():
     assert likely_owner_occupied("12 Oak Ln", "12 OAK LANE")
     assert not likely_owner_occupied("12 Oak Ln", "40 Elm St")
     assert likely_owner_occupied("Oak Ln", "12 Oak Ln") is None
+
+
+def test_deed_year_only_for_year_numbered_books():
+    assert deed_year("2018") == 2018
+    assert deed_year("1378") is None
+    assert deed_year("0954") is None
+    assert deed_year(None) is None
+
+
+def test_same_owner_redeed_is_not_an_owner_change():
+    gis = pd.DataFrame([{"SWIS": "1", "PRINT_KEY": "1", "MUNI": "M", "PROP_ADDR": "1 A ST",
+                         "MAIL_1ADDR": "1 A St", "OWNER": "SMITH", "DEED_BOOK": "2025", "DEED_PAGE": "2"}])
+    history = deed_history({
+        2023: pd.DataFrame([{"SWIS": "1", "PRINT_KEY": "1", "DEED_BOOK": "1000", "DEED_PAGE": "1", "OWNER": "SMITH"}]),
+        2025: pd.DataFrame([{"SWIS": "1", "PRINT_KEY": "1", "DEED_BOOK": "2025", "DEED_PAGE": "2", "OWNER": "SMITH"}]),
+    })
+    state = summarize_state_roll(pd.DataFrame([{"swis_code": "1", "print_key_code": "1", "roll_year": "2025"}]))
+    parcel = build(gis, history, state).iloc[0]
+    assert parcel["redeeded_since_2023"] == True  # noqa: E712
+    assert parcel["owner_changed_since_2023"] == False  # noqa: E712

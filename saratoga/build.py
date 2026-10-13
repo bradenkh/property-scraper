@@ -8,6 +8,7 @@ Writes:
 """
 
 import argparse
+import datetime
 import os
 import re
 import sys
@@ -68,6 +69,17 @@ def _addr_key(address):
     return f"{tokens[0]} {tokens[1]}"
 
 
+def deed_year(deed_book):
+    """Saratoga has numbered deed books by recording year since 2005
+    (book 2018 = recorded in 2018). Older books are numbered below 2000, so
+    for those we only know the deed predates 2005."""
+    try:
+        book = int(deed_book)
+    except (TypeError, ValueError):
+        return None
+    return book if 2005 <= book <= datetime.date.today().year else None
+
+
 def likely_owner_occupied(property_addr, mailing_addr):
     p, m = _addr_key(property_addr), _addr_key(mailing_addr)
     if p is None or m is None:
@@ -91,16 +103,31 @@ def build(gis_current, history, state_summary):
         likely_owner_occupied(a, m) for a, m in zip(parcels["address"], parcels["mail_address"])
     ]
 
+    parcels["last_deed_year"] = parcels["deed_book"].map(deed_year)
+
     # The roll year the current deed first appeared in. If that is later than
-    # the earliest year we looked at, the parcel changed hands in between.
+    # the earliest year we looked at, the parcel was re-deeded in between; if
+    # the owner name also changed, it most likely sold.
     earliest = history["first_seen_roll_year"].min()
     current_deed = history.merge(
         parcels[["swis", "print_key", "deed_book", "deed_page"]],
         on=["swis", "print_key", "deed_book", "deed_page"],
     )[["swis", "print_key", "first_seen_roll_year"]]
     current_deed = current_deed.rename(columns={"first_seen_roll_year": "current_deed_first_seen"})
+    first_owner = (
+        history.sort_values("first_seen_roll_year")
+        .drop_duplicates(["swis", "print_key"])[["swis", "print_key", "owner"]]
+        .rename(columns={"owner": "_first_owner"})
+    )
     parcels = parcels.merge(current_deed, on=["swis", "print_key"], how="left")
-    parcels["transferred_since_" + str(earliest)] = parcels["current_deed_first_seen"] > earliest
+    parcels = parcels.merge(first_owner, on=["swis", "print_key"], how="left")
+    parcels[f"redeeded_since_{earliest}"] = parcels["current_deed_first_seen"] > earliest
+    parcels[f"owner_changed_since_{earliest}"] = (
+        parcels[f"redeeded_since_{earliest}"]
+        & parcels["_first_owner"].notna()
+        & (parcels["_first_owner"] != parcels["owner"])
+    )
+    parcels = parcels.drop(columns="_first_owner")
 
     parcels = parcels.merge(state_summary, on=["swis", "print_key"], how="left")
     return parcels.sort_values(["municipality", "address"]).reset_index(drop=True)

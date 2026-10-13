@@ -38,7 +38,8 @@ def fetch_layer(session, roll_year, fields="*", progress=None):
             progress(f"county GIS {roll_year}: {offset}/{total}")
         if not features or not payload.get("exceededTransferLimit"):
             break
-    return pd.DataFrame(rows)
+    # Parcels drawn as several polygons (condos, split lots) repeat their attributes.
+    return pd.DataFrame(rows).drop_duplicates(["SWIS", "PRINT_KEY"])
 
 
 def deed_history(layers):
@@ -46,8 +47,8 @@ def deed_history(layers):
 
     `layers` maps roll year -> DataFrame with SWIS, PRINT_KEY, DEED_BOOK,
     DEED_PAGE, OWNER. A new deed reference between two roll years means the
-    parcel was transferred in between (a sale, gift or refinance-free
-    re-deeding; the price is not public in this source).
+    parcel was re-deeded in between: a sale, or a transfer such as into a
+    trust or estate (the price is not public in this source).
     """
     frames = []
     for year, df in layers.items():
