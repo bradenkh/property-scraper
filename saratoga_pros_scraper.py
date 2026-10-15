@@ -48,7 +48,7 @@ USER_AGENT = "Mozilla/5.0 (compatible; property-scraper/1.0)"
 PARCEL_COLUMNS = [
     "ParcelId", "SWIS", "Municipality", "SBL", "Address", "Owner", "LotSize",
     "PropertyType", "BuildingStyle", "YearBuilt", "SFLA", "NumBedrooms",
-    "NumFullBaths", "NumHalfBaths", "Fireplaces", "Zoning",
+    "NumFullBaths", "NumHalfBaths", "Fireplaces", "RoomCounts", "Zoning",
     "MostRecentSaleDate", "MostRecentSalePrice",
 ]
 
@@ -247,9 +247,65 @@ def fetch_detail(session_local, parcel):
     return data
 
 
-def stage_details(out, workers, limit):
+# Property types (as shown in the search grid) that count as a place to live.
+# Manufactured housing, seasonal camps and farms are deliberately left out.
+SINGLE_FAMILY = {"1 Family Res", "Rural res", "Rurl res&rec", "Rural res&ag"}
+MULTI_FAMILY = {"2 Family Res", "3 Family Res", "1 Fam Res w/Apt", "Res Multiple",
+                "Multiple res", "Converted Res", "Apartment"}
+
+
+def num(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def beds_baths(p):
+    """The grid's 'Bedrooms/Baths' column is 'beds / baths' (blank if unknown)."""
+    parts = (p.get("RoomCounts") or "").split("/")
+    if len(parts) != 2:
+        return 0.0, 0.0
+    return num(parts[0]), num(parts[1])
+
+
+def select_parcels(parcels, a):
+    """Apply the --segment / narrowing filters using only list-stage data."""
+    if a.segment == "all":
+        types = None
+    else:
+        types = {"single": SINGLE_FAMILY, "multi": MULTI_FAMILY,
+                 "both": SINGLE_FAMILY | MULTI_FAMILY}[a.segment]
+    munis = [m.lower() for m in a.municipality]
+    out = []
+    for p in parcels:
+        if types is not None and p["PropertyType"] not in types:
+            continue
+        if a.segment != "all" and num(p["SFLA"]) <= 0:      # built only
+            continue
+        if munis and not any(m in p["Municipality"].lower() for m in munis):
+            continue
+        beds, baths = beds_baths(p)
+        if a.min_beds and beds < a.min_beds:
+            continue
+        if a.min_baths and baths < a.min_baths:
+            continue
+        if a.min_sqft and num(p["SFLA"]) < a.min_sqft:
+            continue
+        if a.max_sqft and num(p["SFLA"]) > a.max_sqft:
+            continue
+        if a.min_year and num(p["YearBuilt"]) < a.min_year:
+            continue
+        if a.max_year and num(p["YearBuilt"]) > a.max_year:
+            continue
+        out.append(p)
+    return out
+
+
+def stage_details(out, workers, limit, a):
     with open(out / "parcels.csv", newline="", encoding="utf-8") as f:
-        parcels = list(csv.DictReader(f))
+        parcels = select_parcels(list(csv.DictReader(f)), a)
+    print(f"{len(parcels)} parcels match the selection")
     path = out / "details.jsonl"
     done = set()
     if path.exists():
@@ -363,13 +419,34 @@ def main():
                          "threads (default 1.5, i.e. <= 0.67 req/s)")
     ap.add_argument("--limit", type=int, default=0,
                     help="only fetch N details (for testing)")
+    g = ap.add_argument_group("selection (details stage; uses list data only)")
+    g.add_argument("--segment", choices=["both", "single", "multi", "all"],
+                   default="both",
+                   help="built residential parcels: single-family, multi-family, "
+                        "both (default), or all parcels with no filtering")
+    g.add_argument("--municipality", action="append", default=[],
+                   help="substring of municipality name, repeatable "
+                        "(e.g. --municipality Malta --municipality Wilton)")
+    g.add_argument("--min-beds", type=int, default=0)
+    g.add_argument("--min-baths", type=float, default=0)
+    g.add_argument("--min-sqft", type=int, default=0)
+    g.add_argument("--max-sqft", type=int, default=0)
+    g.add_argument("--min-year", type=int, default=0, help="year built")
+    g.add_argument("--max-year", type=int, default=0)
+    g.add_argument("--count", action="store_true",
+                   help="just print how many parcels the selection matches")
     a = ap.parse_args()
     THROTTLE.delay = a.delay
     a.out.mkdir(parents=True, exist_ok=True)
+    if a.count:
+        with open(a.out / "parcels.csv", newline="", encoding="utf-8") as f:
+            n = len(select_parcels(list(csv.DictReader(f)), a))
+        print(f"{n} parcels, ~{n * a.delay / 3600:.1f} h of detail fetching")
+        return
     if a.stage in ("list", "all"):
         stage_list(a.out)
     if a.stage in ("details", "all"):
-        stage_details(a.out, a.workers, a.limit)
+        stage_details(a.out, a.workers, a.limit, a)
     if a.stage in ("export", "all"):
         stage_export(a.out)
 
