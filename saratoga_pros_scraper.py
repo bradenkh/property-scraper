@@ -8,7 +8,9 @@ Three resumable stages (run them in order, or use `all`):
   details  fetch each parcel's detail page and parse it
            -> <out>/details.jsonl   (append-only; re-running skips finished parcels)
            NOTE: the server handles only ~0.7 pages/s no matter how many threads
-           are used, so all ~103k parcels take roughly 40 hours. It is safe to
+           are used, so all ~103k parcels take roughly 40 hours.
+           Requests are also throttled globally (--delay, default 1.5 s) and
+           back off on 429/5xx. It is safe to
            Ctrl-C and re-run; finished parcels are skipped.
   export   flatten details.jsonl into tidy CSVs
            -> properties, buildings, owners, sales, deed_refs, lands,
@@ -17,7 +19,7 @@ Three resumable stages (run them in order, or use `all`):
 Usage:
   python saratoga_pros_scraper.py all --out data
   python saratoga_pros_scraper.py list --out data
-  python saratoga_pros_scraper.py details --out data [--workers 2] [--limit 50]
+  python saratoga_pros_scraper.py details --out data [--delay 1.5] [--limit 50]
   python saratoga_pros_scraper.py export --out data
 
 Requires: requests, beautifulsoup4 (lxml optional).
@@ -59,12 +61,44 @@ def new_session():
     return s
 
 
+class Throttle:
+    """Global limiter: at most one request start per `delay` seconds, across
+    all threads. Also supports a shared pause when the server pushes back."""
+
+    def __init__(self, delay):
+        self.delay = delay
+        self._lock = threading.Lock()
+        self._next = 0.0
+
+    def wait(self):
+        with self._lock:
+            now = time.monotonic()
+            start = max(now, self._next)
+            self._next = start + self.delay
+        if start > now:
+            time.sleep(start - now)
+
+    def pause(self, seconds):
+        with self._lock:
+            self._next = max(self._next, time.monotonic() + seconds)
+
+
+THROTTLE = Throttle(1.5)
+
+
 def request(session, method, url, retries=5, **kw):
-    """HTTP with retry/backoff on network errors, 429 and 5xx."""
+    """Throttled HTTP with backoff on network errors, 429 and 5xx."""
     for attempt in range(retries):
+        THROTTLE.wait()
         try:
             r = session.request(method, url, timeout=60, **kw)
             if r.status_code == 429 or r.status_code >= 500:
+                try:
+                    wait = float(r.headers.get("Retry-After", ""))
+                except ValueError:
+                    wait = 0
+                # slow everyone down, not just this thread
+                THROTTLE.pause(max(wait, 5 * 2 ** attempt))
                 raise requests.HTTPError(f"HTTP {r.status_code}")
             r.raise_for_status()
             return r
@@ -322,11 +356,15 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("stage", choices=["list", "details", "export", "all"])
     ap.add_argument("--out", default="data", type=Path)
-    ap.add_argument("--workers", type=int, default=2,
+    ap.add_argument("--workers", type=int, default=1,
                     help="parallel requests; the server gains nothing past 1-2")
+    ap.add_argument("--delay", type=float, default=1.5,
+                    help="minimum seconds between request starts, across all "
+                         "threads (default 1.5, i.e. <= 0.67 req/s)")
     ap.add_argument("--limit", type=int, default=0,
                     help="only fetch N details (for testing)")
     a = ap.parse_args()
+    THROTTLE.delay = a.delay
     a.out.mkdir(parents=True, exist_ok=True)
     if a.stage in ("list", "all"):
         stage_list(a.out)

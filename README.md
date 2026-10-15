@@ -5,7 +5,7 @@
 ```
 pip install -r requirements.txt
 python saratoga_pros_scraper.py list    --out data   # ~4 min, all ~103k parcels -> data/parcels.csv
-python saratoga_pros_scraper.py details --out data   # resumable, ~40 h for everything
+python saratoga_pros_scraper.py details --out data   # resumable; throttled to 1 request / 1.5 s by default (--delay), so ~43 h
 python saratoga_pros_scraper.py export  --out data   # tidy CSVs from data/details.jsonl
 ```
 
